@@ -8,9 +8,15 @@ Repository with elixir skills for Cursor and others
 
 ## Deployment
 
-For cursor you can put these directories directly into
+You can put these directories directly into the skill directory of your tool
 
 ```
-~/.cursor/skills
+Location	                Scope              Tool
+.cursor/skills/	            Project-level      Cursor
+.claude/skills/	            Project-level      Claude
+.codex/skills/	            Project-level      Codex
+~/.cursor/skills/	        User-level         Cursor
+~/.claude/skills/	        User-level         Claude
+~/.codex/skills/	        User-level         Codex
 ```
 
