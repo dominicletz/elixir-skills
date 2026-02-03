@@ -4,7 +4,7 @@ Repository with elixir skills for Cursor and others
 
 ## Skills
 
-[Remove cyclic dependencies](elixir-cyclic-dependencies) - Tries to remove any cyclic dependencies from your codebase with minimal changes
+[Remove cyclic dependencies](elixir-cyclic-dependencies/SKILL.md) - Tries to remove any cyclic dependencies from your codebase with minimal changes
 
 ## Deployment
 
