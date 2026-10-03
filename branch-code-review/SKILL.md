@@ -1,11 +1,21 @@
 ---
 name: branch-code-review
-description: Review branch changes against AGENTS.md guidelines. Fetch intended goal from PR/issue, check correctness (logic, goal alignment, conciseness), focus on new changes only, pull GitHub PR comments if available via gh CLI. Output summary, alignment score (1-10), and LLM prompts to fix issues. Propose posting the review as a PR comment when one exists. Use when the user asks to review a branch, code review a PR, or review changes.
+description: Use when the user asks to review a branch, review code changes, code review a PR, check branch quality, or evaluate changes against project guidelines.
 ---
 
 # Branch Code Review
 
-Reviews code changes in the current or specified branch against project guidelines in `AGENTS.md`. Scopes review to new changes only and incorporates existing GitHub PR feedback when a PR exists.
+Reviews code changes in the current or specified branch against project guidelines in `AGENTS.md`. Finds real bugs first, guideline violations second. Scores by a fixed formula, so the score reflects the open findings and nothing else.
+
+This project copy is the authoritative version of this skill. Other copies (`~/.cursor/skills/...`) can be out of date.
+
+## Principles
+
+- **Correctness first.** A review that finds only style issues has probably not read the code deeply enough. See "Behavior checks".
+- **Unrelated changes are fine.** Do not flag a change because it is outside the PR goal. Review it like any other change: it must be correct and follow the guidelines.
+- **No flip-flopping.** If an earlier review recommended a pattern and the code follows it, do not recommend the opposite pattern. Only report it if it is a bug.
+- **Respect decisions.** Never re-report an item listed under "Review decisions".
+- **Do not edit guidelines inside the loop.** If you find a gap in `AGENTS.md` or the docs, report it under "Guideline gaps". Do not change guidelines while you review or fix code.
 
 ## Prerequisites
 
@@ -16,130 +26,164 @@ Reviews code changes in the current or specified branch against project guidelin
 
 ### 1. Determine scope
 
-- **Current branch**: Use `git diff origin/master...HEAD` or `git diff master...HEAD` for changes
-- **Named branch**: Use `git diff origin/master...<branch>` or `git merge-base` then `git diff <base>...<branch>`
-- Focus only on files/lines that changed
+- **Current branch**: `git diff origin/master...HEAD`. **Named branch**: `git diff origin/master...<branch>`.
+- **Delta review**: If an earlier review output or PR comment contains `Reviewed commit: <sha>`, review `git diff <sha>..HEAD` as the new code. Read the rest of the branch only to understand context and to check old findings (step 2).
+- Include uncommitted changes (`git diff HEAD`) when they exist, and say so.
 
-### 2. Pull GitHub PR comments (if available)
+### 2. Collect context
 
-If the branch has an open PR:
+**PR feedback** (if the branch has a PR):
 
 ```bash
 gh pr view --json number,body,title,comments,reviews,url
 gh api repos/{owner}/{repo}/pulls/{number}/comments
 ```
 
-If `gh pr view` succeeds, include:
-- PR number and URL
-- General PR comments (body, issue comments)
-- Inline review comments (path, line, body)
+Include the PR number and URL, general comments, and inline review comments.
 
-If no PR exists or `gh` is unavailable, continue without PR comments.
+**Review decisions.** Look for a `## Review decisions` section in the PR description or PR comments, and for decisions the user gave in the chat. Each entry is an accepted item that you must not report again. Example: "GroupChat change stays in this PR."
+
+**Previous findings.** Collect the findings of earlier reviews (PR comments, chat). For each one, state: `fixed`, `open`, or `declined (decision)`. Open findings stay in the list with their original severity.
+
+If no PR exists or `gh` is unavailable, continue without PR data.
 
 ### 3. Determine intended goal and review for correctness
 
-**3a. Determine intended goal**
+**3a. Intended goal**
 
-- **From PR**: Use `body` and `title` from `gh pr view`. The PR description often states the goal.
-- **From linked issue**: Parse the PR body for issue references (e.g. `Closes #123`, `Fixes #456`, `Resolves #789`). Fetch each referenced issue:
-  ```bash
-  gh issue view <number>
-  ```
-  Use the issue title and body as the authoritative goal description when available.
-- **Fallback**: If no PR or no goal in PR/issue, infer the goal from the changed code (module names, function changes, tests, commit messages). State clearly that the goal was inferred.
+- From the PR title and body, or from a linked issue (`Closes #123`: run `gh issue view <number>`).
+- Fallback: infer the goal from the code and commits. State that the goal was inferred.
 
 **3b. Correctness review**
 
-Evaluate the changed code for:
+1. **Logic**: Is the logic sound? Are edge cases handled?
+2. **Goal alignment**: Does the code reach the goal? Look for gaps (missing validation, wrong branch, wrong handling).
+3. **Behavior checks** (required, see below).
+4. **Tests**: Does a test cover each risky behavior? A test that avoids the risky case does not count.
 
-1. **Logical correctness and canonicity**: Is the logic sound? Are edge cases handled? Does it use idiomatic patterns (e.g. `with`, pattern matching) rather than convoluted conditionals?
-2. **Goal alignment**: Does the implementation actually achieve the intended goal? Are there gaps (e.g. missing validation, wrong branch, incorrect handling) or overreach (e.g. solving problems outside scope)?
-3. **Conciseness**: Would a shorter or more direct implementation reach the same goal? If yes, that is a flaw. Prefer minimal, readable code over verbose equivalents.
+### Behavior checks
 
-Report correctness issues in the same format as guideline issues (category, location, explanation).
+Do these for every new interaction with a dependency or another module:
+
+- **Read the callee.** Open the source (`deps/<name>/lib`, or `lib/`) of every function whose semantics matter: `Globals`, `Debouncer`, `Registry`, `GenServer` calls, ETS, timers. Do not assume.
+- **Repeat the event.** For each notification, cache, dedupe, debounce, or "only on change" logic, ask: does the second identical event still work? Does a second process or session with the same key still work?
+- **Check keys.** Are global keys, ETS keys, and debounce keys unique per process, drive, and peer where they need to be?
+- **Check the lifecycle.** Who creates, owns, and cleans up each process, table, timer, and subscription?
+- **Check user-visible text.** Could the new state show a wrong label for a common case (for example the own device, an empty list, a single member)?
+
+If you cannot verify a suspected bug by reading, run a small test or a script. Report unverified suspicions as `(unverified)`.
 
 ### 4. Review against guidelines
 
-Read `AGENTS.md` and evaluate the changed code for:
+Read `AGENTS.md` and check the changed code against its rules:
 
-- **Elixir**: `with` vs `case`, no `try/rescue`, no `Process.get/put`, `cond` for multiple branches, predicate names, `assign_async` for async, etc.
-- **Phoenix**: `assign_async`, `.failed` handling, forms, HEEx syntax, router scope
-- **Gettext**: whole strings, no splitting, `cond` for conditional text
-- **Architecture**: SQL in models, logic out of views, no wrappers, early validation
-- **Security**: no logging/sending credentials
-- **UI/UX**: Tailwind, no loading flicker, micro-interactions
-- **Compliance**: `mix format`, lint passing
+- **Elixir**, **State and ETS** (tables created once at boot, see `docs/ets-tables.md`; cleanup in `terminate/2`), **Globals compartment**
+- **Phoenix** and **Phoenix HTML** (`assign_async`, `.failed`, no SQL or blocking work in `mount`, `handle_params`, `handle_event`), **Gettext**
+- **Architecture** (SQL in models, logic out of views, no wrappers), **Security**
+- **UI/UX and frontend styling** (Tailwind in HEEx, `DdriveWeb.Frontend.*`, see `docs/frontend.md`)
+- **Tests** (`test/BEST_PRACTICE.md`: no sleeps to advance time, cleanup through the owner's function)
+- **Compliance**: `mix format --check-formatted`, lint passing
 
-Do not copy `AGENTS.md` into the review; reference section names and specific rules when citing issues.
+Do not copy `AGENTS.md` into the review. Reference section names.
 
-### 5. Output structure
+### 5. Assign severity
 
-Use this exact structure for the review:
+| Severity | Meaning | Score effect |
+|----------|---------|--------------|
+| **Blocker** | Wrong behavior, crash, data loss, security problem, or a broken test or build. | −4 each |
+| **Major** | A likely bug in a real case; a risky behavior without a test; a violation of a "never" or "must" rule that has real impact (for example SQL in `handle_params`). | −2.5 each |
+| **Minor** | A guideline violation with no behavior impact; duplicated code. | −0.5 each, total at most −2 |
+| **Nit** | Style or conciseness preference with no guideline behind it. | 0 |
+
+Rules:
+
+- Conciseness is a **Nit**, unless the code is duplicated (then **Minor**).
+- List at most 5 Nits. Put them under "Optional".
+- Do not mix severities to inflate the list. One root cause is one finding.
+
+### 6. Score
+
+`Score = 10 − deductions` from the table, rounded to the nearest 0.5, minimum 1. Show the calculation.
+
+- **Merge-ready** means no open Blocker and no open Major. This always gives a score of 8 or more.
+- The score depends on the open findings only. The number of fixed findings, the size of the diff, and the number of earlier rounds do not change it.
+
+### 7. Output structure
 
 ```markdown
 ### Intended goal
+[One sentence. Say if inferred.]
 
-[One sentence: state the goal from PR body, linked issue, or inferred from code. If inferred, say so.]
+Reviewed commit: <sha>   [and "plus uncommitted changes" if true]
 
-### Issues found
+### Previous findings
+- [finding] — fixed | open | declined (decision)
 
-- **[Category]** [Issue]: [File:line or location]. [Brief explanation.]
+### Findings
+- **[Blocker|Major|Minor] [Category]** [Issue]: [File:line]. [Why it is a problem. How you verified it.]
+
+### Optional (Nits)
 - ...
 
-[If PR comments were pulled in:]
 ### GitHub PR comments
+- [Author] on `path:line`: [Comment]
 
-- [Author] on `path:line`: [Comment text]
-- ...
-
----
-
-## 2. Score: X/10
-
-[One sentence justifying the score based on AGENTS.md alignment and correctness (logic, goal alignment, conciseness). 10 = exemplary; 1 = major violations.]
+### Guideline gaps
+- [Gap in AGENTS.md or docs, if any]
 
 ---
 
-## 3. LLM prompts to fix issues
+## Score: X/10
+[Calculation, for example: 10 − 2.5 (1 Major) − 1 (2 Minor) = 6.5 → 6.5. Merge-ready: yes/no.]
 
-[One prompt per issue or group of related issues. Prompts should be copy-pasteable and direct an LLM to fix the specific problem.]
+---
 
-- **Issue [n]**: "In [file], [describe the fix]. Per AGENTS.md [section]."
-- ...
+## Prompts to fix findings
+- **Finding [n]**: "In [file], [fix]. Per AGENTS.md [section]."
 ```
 
-### 6. Propose posting to GitHub PR
+### 8. Propose posting to GitHub PR
 
-If a PR exists for the branch **and the score is 8 or above**, after outputting the review, **propose** posting it as a comment:
+If a PR exists and the review is merge-ready, ask: "Would you like me to post this review as a comment on the PR?" Post with `gh pr comment --body-file -` only after the user confirms.
 
-- Ask: "Would you like me to post this review as a comment on the PR?"
-- Command: `gh pr comment --body-file -` (pipe the markdown into stdin) or `gh pr comment --body "..."` with the review content
-- Only post after the user confirms
+If the review is not merge-ready, do not propose posting. Suggest a fix round.
 
-If the score is below 8, do not propose posting. Instead suggest the user fix the issues locally first, then run the review again.
+## Fix rounds
 
-### Scoring guide
+When the user asks you to fix review findings:
 
-| Score | Meaning |
-|-------|---------|
-| 9–10 | Fully aligned; logically correct; reaches goal; minimal code |
-| 7–8 | Mostly aligned; fixable issues (guidelines or correctness) |
-| 5–6 | Several violations; needs revision |
-| 3–4 | Major violations in multiple areas |
-| 1–2 | Fundamental guideline or correctness violations |
+1. **Fix every finding** (Blocker, Major, Minor, and Nits) unless the user limits the scope. Do not drop items silently.
+2. **Do not widen the change.** Do not add rules, docs, or refactors that no finding asks for.
+3. **Add a test** for every Blocker and Major bug. The test must fail without the fix.
+4. **Run** `mix format`, `mix lint:quick`, and the tests of the touched modules.
+5. **End with a closure table.** Every finding gets one row:
+
+   | # | Finding | Result | Where |
+   |---|---------|--------|-------|
+   | 1 | ... | fixed / declined / deferred | commit or `file:line`, or the reason |
+
+   A `declined` or `deferred` row needs a reason. Add declined rows to the `## Review decisions` section of the PR description (or ask the user to confirm), so that the next review does not report them again.
+
+## Stopping rule
+
+- Run at most **two** fix-and-review rounds for one set of changes.
+- After a review with no open Blocker and no open Major, stop. Nits in "Optional" do not require another round.
+- If a third round still has Blockers or Majors, stop and tell the user what is blocking, instead of continuing to polish.
 
 ## Example prompts
 
-**Guideline issue:**
+**Bug (Major):**
 ```
-In lib/ddrive_web/live/settings_live.ex around line 45, replace the case statement with a with expression per AGENTS.md Elixir guidelines. Prefer :ok = call() when errors don't need user handling.
+In lib/folder/zone_state.ex, put/3 calls Globals.set on a key that holds the peer address. Globals.put skips the broadcast when the value is unchanged, so a second change from the same peer sends no update. Use Globals.push and add a test where one peer changes twice.
 ```
 
-**Correctness issue (conciseness):**
+**Guideline (Minor):**
 ```
-In lib/ddrive_web/live/join_zone.ex around line 120, the validation can be done in a single with pipeline instead of nested case statements. Consolidate and return {:error, _} early per project style.
+In lib/ddrive_web/live/settings_live.ex around line 45, replace the case statement with a with expression per AGENTS.md Elixir guidelines.
 ```
 
 ## Additional resources
 
 - Guidelines: `AGENTS.md` (project root)
+- ETS tables: `docs/ets-tables.md`
+- Test rules: `test/BEST_PRACTICE.md`
